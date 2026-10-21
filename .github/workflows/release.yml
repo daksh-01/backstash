@@ -1,0 +1,110 @@
+# Push a tag like v1.2.3 (or v1.2.3-rc.1 for a pre-release) to publish linux binaries.
+# Installers download a binary plus checksums.txt and verify one against the other, so the asset
+# names below (backstash_linux_<arch>, checksums.txt) are a stable contract: do not rename them.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag must be semver
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || {
+            echo "::error::'$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH[-prerelease]"; exit 1; }
+      - name: Tag must be on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::$GITHUB_REF_NAME is not on main; merge first, then tag"; exit 1; }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test
+
+  build:
+    name: Build linux/${{ matrix.arch }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          make build VERSION="$GITHUB_REF_NAME"
+          mv dist/backstash "dist/backstash_linux_${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backstash_linux_${{ matrix.arch }}
+          path: dist/backstash_linux_${{ matrix.arch }}
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum backstash_linux_* | tee checksums.txt
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/backstash_linux_*
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--title "$GITHUB_REF_NAME" --generate-notes --verify-tag)
+          [[ "$GITHUB_REF_NAME" == *-* ]] && flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+
+  # Download what was just published the way an installer would, and check it before anyone uses it.
+  smoke:
+    name: Check the published release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install with install.sh, the way users do
+        run: |
+          BACKSTASH_VERSION="$GITHUB_REF_NAME" BACKSTASH_REPO="$GITHUB_REPOSITORY" \
+            BACKSTASH_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          [ "$("$RUNNER_TEMP/bin/backstash" version)" = "backstash $GITHUB_REF_NAME" ]
+      - name: Download and verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir rel
+          cd rel
+          sha256sum -c --ignore-missing checksums.txt
+          chmod +x backstash_linux_amd64
+          [ "$(./backstash_linux_amd64 version)" = "backstash $GITHUB_REF_NAME" ]
+          gh attestation verify backstash_linux_amd64 --repo "$GITHUB_REPOSITORY"
