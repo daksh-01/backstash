@@ -1,0 +1,11 @@
+# Go
+/backstash
+/dist/
+*.test
+
+# Local config and staged backups never belong in git
+.env
+.env.*
+identity.env
+dumps/
+coverage.out

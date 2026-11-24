@@ -1,0 +1,21 @@
+version: "2"
+run:
+  build-tags: [integration]
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - errorlint
+    - misspell
+    - unconvert
+    - usestdlibvars
+  settings:
+    errcheck:
+      exclude-functions:
+        # Writes to the user's terminal or a buffer: nothing useful to do if they fail.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]

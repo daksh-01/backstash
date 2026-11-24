@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a PR cancels the run it replaces; main always runs to completion.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make fmt
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - name: Test with the race detector and enforce the coverage floor
+        run: make cover
+      - name: Coverage summary
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          {
+            echo "### Coverage"
+            echo '```'
+            go tool cover -func=coverage.out | awk '/^total:/ || $3+0 < 60'
+            echo '```'
+            echo "Packages and functions under 60% are listed above."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage profile
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+
+  # Runs the real tools against real services. The unit tests prove our logic against fakes;
+  # this proves pg_dump, redis-cli --rdb, docker cp, tar and the S3 client actually behave as assumed.
+  integration:
+    name: Integration (real Postgres, Redis, S3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      IT_PG_CONTAINER: it-pg
+      IT_REDIS_CONTAINER: it-redis
+      IT_FILES_CONTAINER: it-files
+      IT_HOST: 127.0.0.1
+      IT_PG_PORT: "55432"
+      IT_REDIS_PORT: "56379"
+      IT_PG_PASSWORD: pw
+      IT_S3_ENDPOINT: http://127.0.0.1:9090
+      IT_S3_BUCKET: it-bucket
+      IT_S3_KEY: test
+      IT_S3_SECRET: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Host clients for the tcp-mode tests. Postgres 16 matches the server image below.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client redis-tools
+      - name: Start services
+        run: |
+          docker run -d --name it-pg -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=appdb -p 55432:5432 postgres:16
+          docker run -d --name it-redis -p 56379:6379 redis:7
+          docker run -d --name it-files alpine:3 sleep 3600
+          docker run -d --name it-s3 -p 9090:9090 -e COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS=it-bucket adobe/s3mock:4
+      - name: Wait until they answer
+        run: |
+          wait_for() { # wait_for <name> <command...>
+            local name=$1; shift
+            for _ in $(seq 1 60); do "$@" >/dev/null 2>&1 && return 0; sleep 1; done
+            echo "$name did not become ready"; return 1
+          }
+          wait_for postgres docker exec it-pg pg_isready -U postgres -d appdb
+          wait_for redis redis-cli -h 127.0.0.1 -p 56379 ping
+          wait_for s3 curl -sf -o /dev/null "http://127.0.0.1:9090/it-bucket?list-type=2"
+      - run: make integration
+      - name: Service logs
+        if: failure()
+        run: for c in it-pg it-redis it-s3; do echo "=== $c"; docker logs --tail 80 "$c"; done
+
+  vulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross-compile
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: make build VERSION="ci-${GITHUB_SHA::7}"
+      - name: Smoke test the native binary
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          out=$(./dist/backstash version)
+          echo "$out"
+          [ "$out" = "backstash ci-${GITHUB_SHA::7}" ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backstash-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/backstash
+          retention-days: 7
+
+  # One stable name to require in branch protection, however the jobs above change.
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs: [lint, test, integration, vulncheck, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required job failed or was cancelled
+        run: |
+          echo '${{ toJSON(needs) }}'
+          if echo '${{ join(needs.*.result, ' ') }}' | grep -Eq 'failure|cancelled'; then exit 1; fi
