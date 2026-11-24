@@ -375,7 +375,7 @@ func TestPruneCommand(testState *testing.T) {
 	depsInstance, memoryStore, _ := setup(testState, happy(), "")
 	memoryStore.put("myapp/prod/postgres/myapp-20250101-020000.dump", "old", 400*24*time.Hour)
 	memoryStore.put(pgKey, "new", time.Hour)
-	rep := depsInstance.Prune(context.Background())
+	rep := depsInstance.Prune(context.Background(), PruneOpts{})
 	if rep.Failed() || rep.TotalPruned() != 1 {
 		testState.Fatalf("got %+v", rep)
 	}

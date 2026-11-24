@@ -37,6 +37,12 @@ files:    {mode: docker, container: myapp-prod-myapp-1, path: /var/lib/myapp/dat
 | `retention_days` | `30` | Host default. `0` turns pruning off |
 | `shared_secrets_path` | `/backstash/shared` | Infisical folder every app reads first |
 | `staging_dir` | `~/.local/state/backstash/staging` | Private (0700) local folder backups are written to before upload |
+| `secrets_provider` | `infisical` | `infisical` or `aws` (Secrets Manager) |
+| `heartbeat_url` | | Dead-man's-switch URL pinged after every backup; `/fail` is appended on failure. Overridable per app |
+| `age_recipient` | | [age](https://age-encryption.org) public key (`age1...`). Encrypts every backup before upload. Overridable per app |
+| `metrics_dir` | | Writes Prometheus textfile metrics here (node_exporter textfile collector) |
+| `secrets_cache_days` | `0` (off) | If the secrets provider is down, reuse the last good secrets up to this many days old |
+| `max_prune` | `10` | Most backups one prune may delete before it refuses. `0` = no limit |
 
 ## `apps.d/<app>-<env>.yml`
 
@@ -48,6 +54,7 @@ files:    {mode: docker, container: myapp-prod-myapp-1, path: /var/lib/myapp/dat
 | `secrets_path` | yes | Infisical folder for this app. Wins over the shared folder |
 | `retention_days` | no | Overrides the host value. `0` disables pruning for this app |
 | `slack_channel` | no | Overrides the host channel |
+| `heartbeat_url`, `age_recipient` | no | Override the host values |
 
 ### `postgres`
 
@@ -93,13 +100,18 @@ and `INFISICAL_PROJECT_ID` (optionally `INFISICAL_URL`, `INFISICAL_ENV`, default
 not in the environment they are read from `<config-dir>/identity.env`. Give this identity **read-only
 access to `/backstash/**` and nothing else**.
 
+Optional secret `BACKUP_AGE_IDENTITY` (the `AGE-SECRET-KEY-1...` private key) is needed only to restore or
+verify encrypted backups. Keep it out of the shared folder the backup identity reads if you want a stolen host
+to be unable to decrypt old backups: put it in a folder only operators can read, or pass it for the restore only.
+
 ### AWS Secrets Manager instead of Infisical
 
 Set `secrets_provider: aws` in `config.yml`. `shared_secrets_path` and each app's `secrets_path` are then
 Secrets Manager secret names (e.g. `/backstash/shared`), each a key/value secret whose JSON holds the
-names in the table above. The identity is `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
-(optionally `AWS_SESSION_TOKEN`, `AWS_ENDPOINT_URL`), from the environment or `identity.env`. Instance roles
-and SSO are not supported. Grant it `secretsmanager:GetSecretValue` on `/backstash/*` only.
+names in the table above. `AWS_REGION` is required. Credentials are either `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` (optionally `AWS_SESSION_TOKEN`) from the environment or `identity.env`, or, if you set
+neither, the AWS default chain (instance or task role, SSO, `~/.aws`). `AWS_ENDPOINT_URL` is optional. Grant it
+`secretsmanager:GetSecretValue` on `/backstash/*` only. The secrets cache is unavailable with role credentials.
 
 ## Bucket layout
 

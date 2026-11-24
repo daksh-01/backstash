@@ -15,7 +15,8 @@ backstash prune myapp
 | `backup <app> [--env prod] [--only a,b] [--keep]` | Dump, upload, prune each target. Exit 1 if any failed. |
 | `restore <app> <postgres\|redis\|files> [NAME] [--yes]` | Download and restore. Redis prints manual steps instead of overwriting. |
 | `list <app>` | Stored backups per target, newest first. |
-| `prune <app>` | Apply retention without taking a backup. |
+| `prune <app> [--dry-run] [--force]` | Apply retention without taking a backup. `--dry-run` lists what would go and deletes nothing. A prune that would delete more than `max_prune` backups refuses unless `--force`. |
+| `verify <app>` | Download the newest backup of each target and prove it is readable. Alerts on failure. |
 | `validate [app]` | Config, secrets, installed tools, running containers, bucket access. |
 | `version` | Print the version. |
 

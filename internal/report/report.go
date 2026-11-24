@@ -16,6 +16,7 @@ const (
 	ActionBackup  Action = "Backup"
 	ActionRestore Action = "Restore"
 	ActionPrune   Action = "Prune"
+	ActionVerify  Action = "Verify"
 )
 
 // ByteSize represents data size in bytes.

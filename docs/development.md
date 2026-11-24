@@ -13,17 +13,18 @@ bucket, `httptest` fakes for Slack, Infisical and S3, and a small SMTP stub.
 
 ## Layout
 
-| Package | Responsibility |
-|---|---|
-| `cmd/backstash` | Argument parsing and one handler per command |
-| `internal/config` | `config.yml` and `apps.d/*.yml` loading and validation; default secret names |
-| `internal/secrets` | Infisical over REST |
-| `internal/execx` | Runs external tools; `InContainer` is the one place that builds `docker exec`; `Fake` for tests |
-| `internal/target` | Postgres, Redis and files dump and restore |
-| `internal/storage`, `internal/retention` | The bucket and pruning |
-| `internal/report`, `internal/notify`, `internal/runlog` | Run results, Slack and email, log capture |
-| `internal/run` | Orchestration (`run.go`), wiring (`wire.go`), alerts (`notifier.go`), preflight (`validate.go`) |
-| `internal/integration` | Build-tagged tests against real services |
+| Package                                                 | Responsibility                                                                                  |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `cmd/backstash`                                         | Argument parsing and one handler per command                                                    |
+| `internal/config`                                       | `config.yml` and `apps.d/*.yml` loading and validation; default secret names                    |
+| `internal/secrets`                                      | AWS Secrets Manager and Infisical (REST), plus the last-good-secrets cache                      |
+| `internal/execx`                                        | Runs external tools; `InContainer` is the one place that builds `docker exec`; `Fake` for tests |
+| `internal/target`                                       | Postgres, Redis and files dump and restore                                                      |
+| `internal/storage`, `internal/retention`                | The bucket (with upload retry) and pruning                                                      |
+| `internal/encrypt`                                      | age encryption of backups                                                                       |
+| `internal/report`, `internal/notify`, `internal/runlog` | Run results, Slack and email, log capture                                                       |
+| `internal/run`                                          | Orchestration (`run.go`), wiring (`wire.go`), alerts (`notifier.go`), preflight (`validate.go`) |
+| `internal/integration`                                  | Build-tagged tests against real services                                                        |
 
 New external-tool calls go through `execx.Runner` (and `execx.InContainer` for containers) so they
 stay testable, and secrets travel in `Cmd.Env`, never argv. Keep dependencies minimal.
@@ -32,14 +33,14 @@ stay testable, and secrets travel in `Cmd.Env`, never argv. Keep dependencies mi
 
 Runs on every PR and on pushes to `main`. A new push cancels the superseded PR run.
 
-| Job | What it proves |
-|---|---|
-| Lint | `gofmt` clean; golangci-lint (`.golangci.yml`) |
-| Test (ubuntu, macOS) | `go vet`, `go test -race`, total coverage at or above `MIN_COVER`; coverage profile uploaded |
-| Integration | The real `pg_dump`/`pg_restore`, `redis-cli --rdb`, `docker cp`, `tar` and S3 client against Postgres 16, Redis 7 and an S3 mock, in docker and tcp mode, including restore and a failing dump |
-| Vulnerability scan | `govulncheck` over the module and the Go toolchain |
-| Build | Cross-compiles linux amd64/arm64 and darwin/arm64; smoke-tests that the binary reports the commit |
-| CI passed | One stable check to require in branch protection |
+| Job                  | What it proves                                                                                                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lint                 | `gofmt` clean; golangci-lint (`.golangci.yml`)                                                                                                                                                 |
+| Test (ubuntu, macOS) | `go vet`, `go test -race`, total coverage at or above `MIN_COVER`; coverage profile uploaded                                                                                                   |
+| Integration          | The real `pg_dump`/`pg_restore`, `redis-cli --rdb`, `docker cp`, `tar` and S3 client against Postgres 16, Redis 7 and an S3 mock, in docker and tcp mode, including restore and a failing dump |
+| Vulnerability scan   | `govulncheck` over the module and the Go toolchain                                                                                                                                             |
+| Build                | Cross-compiles linux amd64/arm64 and darwin/arm64; smoke-tests that the binary reports the commit                                                                                              |
+| CI passed            | One stable check to require in branch protection                                                                                                                                               |
 
 Run the integration tests locally by starting the same containers and exporting the `IT_*` variables
 shown in the `integration` job. Without them every test skips.

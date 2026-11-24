@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"backstash/internal/config"
 	"backstash/internal/execx"
@@ -22,6 +23,7 @@ const (
 	SecretSlackToken  = "SLACK_BOT_TOKEN"
 	SecretSMTPUser    = "SMTP_USER"
 	SecretSMTPPass    = "SMTP_PASSWORD"
+	SecretAgeIdentity = "BACKUP_AGE_IDENTITY" // private key matching age_recipient; restore and verify only
 	sharedSecretsPath = "/backstash/shared"
 )
 
@@ -49,9 +51,13 @@ func Open(ctx context.Context, cfg *config.Config, app *config.App, configDir st
 	if err != nil {
 		return nil, nil, err
 	}
-	sec, err := secrets.Resolve(ctx, src, SecretPaths(cfg, app)...)
+	cache := filepath.Join(configDir, "secrets-"+app.Name+"-"+app.Environment+".cache")
+	sec, cached, err := secrets.ResolveCached(ctx, src, cache, time.Duration(cfg.Host.SecretsCacheDays)*24*time.Hour, SecretPaths(cfg, app)...)
 	if err != nil {
 		return nil, nil, err
+	}
+	if cached {
+		log.Warn("secrets provider unreachable; using the cached copy of the secrets")
 	}
 	deps := &Deps{
 		Cfg: cfg,
@@ -82,8 +88,8 @@ func NewStore(cfg *config.Config, app *config.App, sec secrets.Set) (storage.Sto
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("secrets not found in Infisical: %s", strings.Join(missing, ", "))
 	}
-	return storage.NewS3(storage.S3Config{
+	return storage.Retrying{Store: storage.NewS3(storage.S3Config{
 		Endpoint: cfg.Host.S3.Endpoint, Region: cfg.Host.S3.Region, Bucket: app.Bucket,
 		AccessKeyID: id, SecretAccessKey: key,
-	}), nil
+	})}, nil
 }

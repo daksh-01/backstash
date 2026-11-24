@@ -34,7 +34,14 @@ func (client *cli) dispatch(ctx context.Context, cmd string, opts options) int {
 		})
 	case "prune":
 		return client.withOneApp(ctx, cmd, opts, func(deps *run.Deps, notifier run.Notifier) int {
-			return client.finish(ctx, notifier, deps.Prune(ctx))
+			if opts.dryRun { // a preview changes nothing, so it never alerts
+				notifier = run.Notifier{Log: notifier.Log}
+			}
+			return client.finish(ctx, notifier, deps.Prune(ctx, run.PruneOpts{DryRun: opts.dryRun, Force: opts.force}))
+		})
+	case "verify":
+		return client.withOneApp(ctx, cmd, opts, func(deps *run.Deps, notifier run.Notifier) int {
+			return client.finish(ctx, notifier, deps.Verify(ctx))
 		})
 	case "list":
 		return client.withOneApp(ctx, cmd, opts, func(deps *run.Deps, _ run.Notifier) int {
@@ -55,7 +62,7 @@ func (client *cli) dispatch(ctx context.Context, cmd string, opts options) int {
 
 // startupAction names the alert for a startup failure; "list" is read-only and never alerts.
 var startupAction = map[string]report.Action{
-	"backup": report.ActionBackup, "prune": report.ActionPrune, "restore": report.ActionRestore,
+	"backup": report.ActionBackup, "prune": report.ActionPrune, "restore": report.ActionRestore, "verify": report.ActionVerify,
 }
 
 // withOneApp is for commands taking exactly one <app> argument.

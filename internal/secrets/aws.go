@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
@@ -16,12 +16,17 @@ import (
 // AWS reads from AWS Secrets Manager. Each path is the name of one secret whose
 // SecretString is a JSON object of KEY: value pairs (the "key/value" secret type).
 type AWS struct {
-	client *secretsmanager.Client
+	client   *secretsmanager.Client
+	cacheKey string
 }
 
-// AWSFromEnv builds a client from AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION
-// (optionally AWS_ENDPOINT_URL). Like FromEnv, the environment wins over identityFile.
-// shortcut: static keys only, no instance roles or SSO; upgrade by loading the SDK default chain.
+// CacheKey seals the local secrets cache; it is the credential this client signs with.
+func (src *AWS) CacheKey() string { return src.cacheKey }
+
+// AWSFromEnv builds a client. With AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (optionally
+// AWS_SESSION_TOKEN) in the environment or identityFile it uses those static keys; with neither it
+// uses the AWS default chain (instance or task role, SSO, ~/.aws), so no key has to be on disk.
+// AWS_REGION is required either way; AWS_ENDPOINT_URL is optional. The environment wins over the file.
 func AWSFromEnv(identityFile string) (*AWS, error) {
 	var fileVars map[string]string
 	if identityFile != "" {
@@ -37,26 +42,30 @@ func AWSFromEnv(identityFile string) (*AWS, error) {
 		}
 		return fileVars[name]
 	}
-	keyID, secret, region := lookup("AWS_ACCESS_KEY_ID"), lookup("AWS_SECRET_ACCESS_KEY"), lookup("AWS_REGION")
-	var missing []string
-	for _, need := range []struct{ name, value string }{
-		{"AWS_ACCESS_KEY_ID", keyID}, {"AWS_SECRET_ACCESS_KEY", secret}, {"AWS_REGION", region},
-	} {
-		if need.value == "" {
-			missing = append(missing, need.name)
+	keyID, secret := lookup("AWS_ACCESS_KEY_ID"), lookup("AWS_SECRET_ACCESS_KEY")
+	if (keyID == "") != (secret == "") {
+		return nil, errors.New("aws identity incomplete: set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or neither to use the AWS default credential chain")
+	}
+	opts := secretsmanager.Options{Region: lookup("AWS_REGION")}
+	cacheKey := secret
+	if keyID != "" {
+		opts.Credentials = credentials.NewStaticCredentialsProvider(keyID, secret, lookup("AWS_SESSION_TOKEN"))
+	} else {
+		cfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(opts.Region))
+		if err != nil {
+			return nil, fmt.Errorf("aws credential chain: %w", err)
 		}
+		opts.Credentials, opts.Region = cfg.Credentials, cfg.Region
+		// Role credentials rotate, so there is no stable secret to seal a cache with.
+		cacheKey = ""
 	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("aws identity incomplete, missing: %s", strings.Join(missing, ", "))
-	}
-	opts := secretsmanager.Options{
-		Region:      region,
-		Credentials: credentials.NewStaticCredentialsProvider(keyID, secret, lookup("AWS_SESSION_TOKEN")),
+	if opts.Region == "" {
+		return nil, errors.New("aws identity incomplete, missing: AWS_REGION")
 	}
 	if endpoint := lookup("AWS_ENDPOINT_URL"); endpoint != "" {
 		opts.BaseEndpoint = aws.String(endpoint)
 	}
-	return &AWS{client: secretsmanager.New(opts)}, nil
+	return &AWS{client: secretsmanager.New(opts), cacheKey: cacheKey}, nil
 }
 
 // Read implements Source.

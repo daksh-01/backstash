@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -168,7 +169,51 @@ func TestAWSFromEnvReportsMissing(testState *testing.T) {
 	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"} {
 		testState.Setenv(name, "")
 	}
+	testState.Setenv("AWS_CONFIG_FILE", "/dev/null")
+	testState.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
 	if _, err := AWSFromEnv(""); err == nil || !strings.Contains(err.Error(), "AWS_REGION") {
 		testState.Fatalf("got %v", err)
+	}
+}
+
+type flaky struct {
+	vals map[string]string
+	down bool
+}
+
+func (src *flaky) CacheKey() string { return "client-secret" }
+func (src *flaky) Read(context.Context, string) (map[string]string, error) {
+	if src.down {
+		return nil, errors.New("provider down")
+	}
+	return src.vals, nil
+}
+
+func TestCacheServesLastGoodSecretsWhileProviderIsDown(testState *testing.T) {
+	path := filepath.Join(testState.TempDir(), "c")
+	src := &flaky{vals: map[string]string{"A": "1"}}
+	if _, from, err := ResolveCached(context.Background(), src, path, time.Hour, "/p"); err != nil || from {
+		testState.Fatalf("live read: from=%v err=%v", from, err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		testState.Fatalf("cache mode %v", info.Mode())
+	}
+	if raw, _ := os.ReadFile(path); strings.Contains(string(raw), `"A"`) {
+		testState.Fatal("cache is not sealed")
+	}
+	src.down = true
+	set, from, err := ResolveCached(context.Background(), src, path, time.Hour, "/p")
+	if err != nil || !from || set["A"] != "1" {
+		testState.Fatalf("cached read: %v from=%v err=%v", set, from, err)
+	}
+	// different folders, an expired copy, and caching off must all surface the outage
+	if _, _, err := ResolveCached(context.Background(), src, path, time.Hour, "/other"); err == nil {
+		testState.Fatal("served a cache for different paths")
+	}
+	if _, _, err := ResolveCached(context.Background(), src, path, time.Nanosecond, "/p"); err == nil {
+		testState.Fatal("served an expired cache")
+	}
+	if _, _, err := ResolveCached(context.Background(), src, path, 0, "/p"); err == nil {
+		testState.Fatal("cache used while disabled")
 	}
 }

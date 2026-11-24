@@ -35,6 +35,9 @@ func (secretsSet Set) Get(name string) (string, bool) {
 	return val, ok && val != ""
 }
 
+// CacheKey seals the local secrets cache; it is the machine identity's client secret.
+func (client *Infisical) CacheKey() string { return client.ClientSecret }
+
 // Source reads every secret in one Infisical folder.
 type Source interface {
 	Read(ctx context.Context, path string) (map[string]string, error)

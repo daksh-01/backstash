@@ -84,3 +84,15 @@ type RestoreError struct {
 
 func (err *RestoreError) Error() string { return err.Err.Error() + " (" + err.Note + ")" }
 func (err *RestoreError) Unwrap() error { return err.Err }
+
+// ListPostgres reads a custom-format dump's table of contents with `pg_restore --list`. It needs no
+// connection, so it proves the file is a complete, readable dump without touching any database.
+func (deps Deps) ListPostgres(ctx context.Context, target *config.PostgresTarget, path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	return deps.Run.Run(ctx, place(target.Mode, target.Container,
+		execx.Cmd{Name: "pg_restore", Args: []string{"--list"}, Stdin: file, Stdout: io.Discard}))
+}

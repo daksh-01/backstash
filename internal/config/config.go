@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"backstash/internal/encrypt"
 )
 
 const (
@@ -127,6 +129,11 @@ type Host struct {
 	SharedSecretsPath string `yaml:"shared_secrets_path"`
 	SecretsProvider   string `yaml:"secrets_provider"` // infisical (default) or aws
 	StagingDir        string `yaml:"staging_dir"`
+	HeartbeatURL      string `yaml:"heartbeat_url"`      // pinged after each backup; "/fail" is appended on failure
+	AgeRecipient      string `yaml:"age_recipient"`      // age public key: encrypt every backup before upload
+	MetricsDir        string `yaml:"metrics_dir"`        // write Prometheus textfile metrics here
+	SecretsCacheDays  int    `yaml:"secrets_cache_days"` // reuse last-good secrets for this long if the provider is down; 0 = off
+	MaxPrune          *int   `yaml:"max_prune"`          // most backups one prune may delete (default 10, 0 = no limit)
 }
 
 type S3 struct {
@@ -153,6 +160,8 @@ type App struct {
 	RetentionDays *int   `yaml:"retention_days"`
 	SecretsPath   string `yaml:"secrets_path"`
 	SlackChannel  string `yaml:"slack_channel"`
+	HeartbeatURL  string `yaml:"heartbeat_url"` // overrides the host value
+	AgeRecipient  string `yaml:"age_recipient"` // overrides the host value
 
 	Postgres *PostgresTarget `yaml:"postgres"`
 	Redis    *RedisTarget    `yaml:"redis"`
@@ -219,6 +228,23 @@ func (cfg *Config) Retention(app *App) int {
 		return *cfg.Host.RetentionDays
 	}
 	return DefaultRetentionDays
+}
+
+// Heartbeat is the effective heartbeat URL (app, then host); "" means none.
+func (cfg *Config) Heartbeat(app *App) string { return cmp.Or(app.HeartbeatURL, cfg.Host.HeartbeatURL) }
+
+// Recipient is the effective age public key (app, then host); "" means backups are not encrypted.
+func (cfg *Config) Recipient(app *App) string { return cmp.Or(app.AgeRecipient, cfg.Host.AgeRecipient) }
+
+// DefaultMaxPrune is how many backups one prune may delete before it refuses.
+const DefaultMaxPrune = 10
+
+// MaxPrune is the most backups one prune may delete; 0 means no limit.
+func (cfg *Config) MaxPrune() int {
+	if cfg.Host.MaxPrune != nil {
+		return *cfg.Host.MaxPrune
+	}
+	return DefaultMaxPrune
 }
 
 // Prefix is the folder inside the app's bucket holding backups of kind k, ending in "/".
@@ -368,7 +394,26 @@ func (host *Host) validate(path string) []error {
 	if p := host.SecretsProvider; p != "" && p != "infisical" && p != "aws" {
 		probs.addf("secrets_provider must be infisical or aws (got %q)", p)
 	}
+	if host.MaxPrune != nil && *host.MaxPrune < 0 {
+		probs.addf("max_prune must be >= 0")
+	}
+	if host.SecretsCacheDays < 0 {
+		probs.addf("secrets_cache_days must be >= 0")
+	}
+	validateShared(&probs, host.HeartbeatURL, host.AgeRecipient)
 	return probs.errs
+}
+
+// validateShared checks the keys that exist on both the host and the app.
+func validateShared(probs *problems, heartbeat, recipient string) {
+	if heartbeat != "" && !strings.HasPrefix(heartbeat, "https://") && !strings.HasPrefix(heartbeat, "http://") {
+		probs.addf("heartbeat_url must start with http:// or https:// (got %q)", heartbeat)
+	}
+	if recipient != "" {
+		if err := encrypt.ParseRecipient(recipient); err != nil {
+			probs.addf("age_recipient is not a valid age public key: %v", err)
+		}
+	}
 }
 
 func (app *App) validate() []error {
@@ -390,6 +435,7 @@ func (app *App) validate() []error {
 	if app.RetentionDays != nil && *app.RetentionDays < 0 {
 		probs.addf("retention_days must be >= 0")
 	}
+	validateShared(&probs, app.HeartbeatURL, app.AgeRecipient)
 	if len(app.Kinds()) == 0 {
 		probs.addf("configure at least one of postgres, redis, files")
 	}

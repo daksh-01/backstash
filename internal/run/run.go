@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"backstash/internal/config"
+	"backstash/internal/encrypt"
 	"backstash/internal/report"
 	"backstash/internal/retention"
 	"backstash/internal/storage"
@@ -42,6 +43,8 @@ type Deps struct {
 	Log    *slog.Logger
 	In     io.Reader // restore prompts
 	Out    io.Writer // user-facing output (not logs)
+
+	FreeBytes func(dir string) (uint64, error) // free space in dir; nil means ask the OS
 
 	reader *bufio.Reader
 }
@@ -169,6 +172,13 @@ func (deps *Deps) backupOne(ctx context.Context, kind config.Kind, options Backu
 		}
 	}()
 
+	// History is read once: it sizes the free-space check and the size sanity check.
+	history, _ := deps.Store.List(ctx, deps.App.Prefix(kind))
+	if err := deps.checkDisk(history); err != nil {
+		log.Error("not enough disk", "err", err)
+		res.Err = err
+		return res
+	}
 	art, err := deps.dump(ctx, kind)
 	if err != nil {
 		log.Error("dump failed", "err", err)
@@ -176,6 +186,18 @@ func (deps *Deps) backupOne(ctx context.Context, kind config.Kind, options Backu
 		return res
 	}
 	log.Info("dumped", "file", art.Name, "bytes", art.Size)
+
+	if recipient := deps.Cfg.Recipient(deps.App); recipient != "" {
+		if art, err = deps.seal(art, recipient); err != nil {
+			log.Error("encrypt failed", "err", err)
+			res.Err = err
+			return res
+		}
+	}
+	if warn := sizeAnomaly(history, art.Size); warn != "" {
+		log.Warn("backup size looks wrong", "detail", warn)
+		res.Note = warn
+	}
 
 	key := deps.App.Prefix(kind) + art.Name
 	if err := deps.Store.Upload(ctx, art.Path, key); err != nil {
@@ -190,22 +212,84 @@ func (deps *Deps) backupOne(ctx context.Context, kind config.Kind, options Backu
 	}
 
 	// A prune failure must not fail a backup that was stored: it is logged and shown.
-	prunedCount, err := retention.Prune(ctx, deps.Store, deps.App.Prefix(kind), deps.now(), deps.Cfg.Retention(deps.App))
+	pruned, err := retention.Prune(ctx, deps.Store, deps.App.Prefix(kind), deps.now(), deps.Cfg.Retention(deps.App),
+		retention.Options{Max: deps.Cfg.MaxPrune()})
 	if err != nil {
 		log.Warn("prune failed", "err", err)
-		res.Note = "prune failed: " + err.Error()
+		res.Note = strings.TrimSpace(res.Note + " prune failed: " + err.Error())
 		return res
 	}
-	res.Pruned = prunedCount
+	res.Pruned = len(pruned)
 	return res
 }
 
+// seal encrypts the staged dump for recipient and removes the plaintext, so only ciphertext is
+// ever uploaded or kept (--keep, failed uploads).
+func (deps *Deps) seal(art target.Artifact, recipient string) (target.Artifact, error) {
+	sealed := art.Path + ".age"
+	err := encrypt.File(art.Path, sealed, recipient)
+	_ = os.Remove(art.Path)
+	if err != nil {
+		return art, fmt.Errorf("encrypt backup: %w", err)
+	}
+	info, err := os.Stat(sealed)
+	if err != nil {
+		return art, err
+	}
+	return target.Artifact{Path: sealed, Name: art.Name + ".age", Size: info.Size()}, nil
+}
+
+// fetch downloads one backup into staging and decrypts it if it is an .age file. It returns the
+// path of the plaintext; the caller removes it.
+func (deps *Deps) fetch(ctx context.Context, key, base string) (string, error) {
+	if err := os.MkdirAll(deps.Target.StagingDir, 0o700); err != nil {
+		return "", err
+	}
+	local := filepath.Join(deps.Target.StagingDir, base)
+	if err := deps.Store.Download(ctx, key, local); err != nil {
+		return "", err
+	}
+	plain, encrypted := strings.CutSuffix(local, ".age")
+	if !encrypted {
+		return local, nil
+	}
+	defer func() { _ = os.Remove(local) }()
+	identity, ok := deps.Target.Secrets.Get(SecretAgeIdentity)
+	if !ok {
+		return "", fmt.Errorf("%s is encrypted and secret %s is not set", base, SecretAgeIdentity)
+	}
+	if err := encrypt.Decrypt(local, plain, identity); err != nil {
+		return "", err
+	}
+	return plain, nil
+}
+
+// PruneOpts selects how a prune behaves.
+type PruneOpts struct {
+	DryRun bool // report what would be deleted, delete nothing
+	Force  bool // lift the max_prune safety limit
+}
+
 // Prune applies retention to every target of the app without taking a backup.
-func (deps *Deps) Prune(ctx context.Context) report.Report {
+func (deps *Deps) Prune(ctx context.Context, opts PruneOpts) report.Report {
 	rep := report.New(report.ActionPrune, deps.App.Name, deps.App.Environment)
+	limit := deps.Cfg.MaxPrune()
+	if opts.Force {
+		limit = 0
+	}
 	for _, kind := range deps.App.Kinds() {
 		targetResult := report.Target{Kind: kind}
-		targetResult.Pruned, targetResult.Err = retention.Prune(ctx, deps.Store, deps.App.Prefix(kind), deps.now(), deps.Cfg.Retention(deps.App))
+		gone, err := retention.Prune(ctx, deps.Store, deps.App.Prefix(kind), deps.now(), deps.Cfg.Retention(deps.App),
+			retention.Options{DryRun: opts.DryRun, Max: limit})
+		targetResult.Err = err
+		if opts.DryRun {
+			targetResult.Note = fmt.Sprintf("dry run: would remove %d backup(s)", len(gone))
+			for _, obj := range gone {
+				deps.say("would delete %s", obj.Key)
+			}
+		} else {
+			targetResult.Pruned = len(gone)
+		}
 		rep.Targets = append(rep.Targets, targetResult)
 	}
 	return rep
@@ -356,13 +440,9 @@ func (deps *Deps) restore(ctx context.Context, kind config.Kind, name string, ye
 	if err := deps.confirm(kind, base, yes); err != nil {
 		return report.Target{}, err
 	}
-	if err := os.MkdirAll(deps.Target.StagingDir, 0o700); err != nil {
-		return report.Target{}, err
-	}
-
-	local := filepath.Join(deps.Target.StagingDir, base)
 	targetResult := report.Target{Kind: kind, Name: base}
-	if err := deps.Store.Download(ctx, key, local); err != nil {
+	local, err := deps.fetch(ctx, key, base)
+	if err != nil {
 		targetResult.Err = err
 		return targetResult, nil
 	}

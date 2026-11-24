@@ -3,6 +3,7 @@ package retention
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,9 +14,12 @@ import (
 	"backstash/internal/storage"
 )
 
-// nameRe matches any backup file we created: <anything>-YYYYmmdd-HHMMSS.{dump,rdb,tar.gz}.
+// nameRe matches any backup file we created: <anything>-YYYYmmdd-HHMMSS.{dump,rdb,tar.gz}[.age].
 // The leading .+ intentionally matches any label; callers filter by prefix separately.
-var nameRe = regexp.MustCompile(`^.+-\d{8}-\d{6}(?:\.dump|\.rdb|\.tar\.gz)$`)
+var nameRe = regexp.MustCompile(`^.+-\d{8}-\d{6}(?:\.dump|\.rdb|\.tar\.gz)(?:\.age)?$`)
+
+// IsBackupName reports whether name looks like a backup this tool wrote.
+func IsBackupName(name string) bool { return nameRe.MatchString(name) }
 
 // Expired returns the backups older than days, never including the newest one: a wrong clock
 // or a long outage can then never leave you with no backup at all. days <= 0 disables pruning.
@@ -45,27 +49,47 @@ func Expired(objs []storage.Object, now time.Time, days int) []storage.Object {
 	return expired
 }
 
-// Prune deletes expired backups under prefix and returns how many it removed.
-func Prune(ctx context.Context, store storage.Store, prefix string, now time.Time, days int) (int, error) {
+// Options make a prune safer. DryRun deletes nothing. Max > 0 refuses to delete more than that
+// many backups in one run, so a typo in retention_days or a wrong clock cannot wipe the history.
+type Options struct {
+	DryRun bool
+	Max    int
+}
+
+// LimitError says a prune was refused for being too large.
+type LimitError struct{ Count, Max int }
+
+func (err LimitError) Error() string {
+	return fmt.Sprintf("retention would delete %d backups, over the limit of %d; check retention_days and the clock, then run `backstash prune <app> --force` if that is intended", err.Count, err.Max)
+}
+
+// Prune deletes expired backups under prefix and returns them (in a dry run: the ones it would delete).
+func Prune(ctx context.Context, store storage.Store, prefix string, now time.Time, days int, opts Options) ([]storage.Object, error) {
 	if days <= 0 {
-		return 0, nil
+		return nil, nil
 	}
 	objs, err := store.List(ctx, prefix)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	expired := Expired(objs, now, days)
 	if len(expired) == 0 {
-		return 0, nil
+		return nil, nil
+	}
+	if opts.Max > 0 && len(expired) > opts.Max {
+		return nil, LimitError{len(expired), opts.Max}
+	}
+	if opts.DryRun {
+		return expired, nil
 	}
 	keys := make([]string, len(expired))
 	for idx, obj := range expired {
 		keys[idx] = obj.Key
 	}
 	if err := store.Delete(ctx, keys); err != nil {
-		return 0, err
+		return nil, err
 	}
-	return len(keys), nil
+	return expired, nil
 }
 
 // PruneLocal deletes expired kept backups from the staging folder (`--keep`, or failed uploads).

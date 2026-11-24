@@ -27,7 +27,8 @@ Commands:
   backup   <app> [--env prod] [--only postgres,redis,files] [--keep]
   restore  <app> <postgres|redis|files> [NAME] [--env prod] [--yes]
   list     <app> [--env prod] [--only ...]
-  prune    <app> [--env prod]
+  prune    <app> [--env prod] [--dry-run] [--force]
+  verify   <app> [--env prod]     download the newest backups and prove they are readable
   validate [app] [--env prod]     check config, secrets, tools and the bucket; writes nothing
   version
 
@@ -61,6 +62,8 @@ type options struct {
 	env       string
 	only      []config.Kind
 	keep, yes bool
+	dryRun    bool
+	force     bool
 	pos       []string
 }
 
@@ -111,6 +114,8 @@ func realMain(args []string, in io.Reader, out, errw io.Writer) (code int) {
 	only := fs.String("only", "", "comma-separated targets")
 	fs.BoolVar(&opts.keep, "keep", false, "backup: keep the local copy after upload")
 	fs.BoolVar(&opts.yes, "yes", false, "restore: skip the confirmation prompt")
+	fs.BoolVar(&opts.dryRun, "dry-run", false, "prune: show what would be deleted, delete nothing")
+	fs.BoolVar(&opts.force, "force", false, "prune: lift the max_prune safety limit")
 	var err error
 	if opts.pos, err = parseInterleaved(fs, rest); err != nil {
 		return 2

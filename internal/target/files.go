@@ -1,8 +1,11 @@
 package target
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -54,4 +57,37 @@ func (deps Deps) RestoreFiles(ctx context.Context, target *config.FilesTarget, p
 	}
 	defer func() { _ = file.Close() }()
 	return deps.Run.Run(ctx, tarCmd(target, file, nil, "-xzf", "-", "-C", target.Path))
+}
+
+// VerifyFiles reads the whole archive in process: a truncated or corrupt .tar.gz fails here, an
+// empty one too. Needs no tar binary, so it works wherever the backup runs.
+func VerifyFiles(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("not a gzip archive: %w", err)
+	}
+	reader := tar.NewReader(gz)
+	entries := 0
+	for {
+		_, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("corrupt archive: %w", err)
+		}
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			return fmt.Errorf("corrupt archive: %w", err)
+		}
+		entries++
+	}
+	if entries == 0 {
+		return errors.New("archive has no files")
+	}
+	return nil
 }

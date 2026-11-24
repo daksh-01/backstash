@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,9 +115,43 @@ func TestPruneDeletesAndCounts(testState *testing.T) {
 	memoryStore := &memStore{objs: []storage.Object{
 		obj("p/db-20260101-020000.dump", 300), obj("p/db-20261120-020000.dump", 3),
 	}}
-	prunedCount, err := Prune(context.Background(), memoryStore, "p/", now, 30)
-	if err != nil || prunedCount != 1 || memoryStore.deleted[0] != "p/db-20260101-020000.dump" {
-		testState.Errorf("n=%d err=%v deleted=%v", prunedCount, err, memoryStore.deleted)
+	pruned, err := Prune(context.Background(), memoryStore, "p/", now, 30, Options{})
+	if err != nil || len(pruned) != 1 || memoryStore.deleted[0] != "p/db-20260101-020000.dump" {
+		testState.Errorf("n=%d err=%v deleted=%v", len(pruned), err, memoryStore.deleted)
+	}
+}
+
+func manyOld() *memStore {
+	store := &memStore{objs: []storage.Object{obj("p/db-20261120-020000.dump", 3)}}
+	for day := 100; day < 105; day++ {
+		store.objs = append(store.objs, obj("p/db-2026010"+string(rune('0'+day-100))+"-020000.dump", day))
+	}
+	return store
+}
+
+func TestPruneDryRunDeletesNothingButReports(testState *testing.T) {
+	store := manyOld()
+	pruned, err := Prune(context.Background(), store, "p/", now, 30, Options{DryRun: true})
+	if err != nil || len(pruned) != 5 || store.deleted != nil {
+		testState.Fatalf("pruned=%d err=%v deleted=%v", len(pruned), err, store.deleted)
+	}
+}
+
+func TestPruneRefusesToDeleteMoreThanTheLimit(testState *testing.T) {
+	store := manyOld()
+	_, err := Prune(context.Background(), store, "p/", now, 30, Options{Max: 3})
+	var limit LimitError
+	if !errors.As(err, &limit) || limit.Count != 5 || store.deleted != nil {
+		testState.Fatalf("err=%v deleted=%v", err, store.deleted)
+	}
+	if pruned, err := Prune(context.Background(), store, "p/", now, 30, Options{Max: 5}); err != nil || len(pruned) != 5 {
+		testState.Fatalf("at the limit must pass: %d %v", len(pruned), err)
+	}
+}
+
+func TestEncryptedBackupsAreRetainedLikeOthers(testState *testing.T) {
+	if !IsBackupName("db-20261120-020000.dump.age") || IsBackupName("db-20261120-020000.dump.age.tmp") {
+		testState.Fatal("nameRe must accept exactly the .age suffix")
 	}
 }
 
