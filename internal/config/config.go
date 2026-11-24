@@ -125,6 +125,7 @@ type Host struct {
 	AlertEmailTo      string `yaml:"alert_email_to"`
 	RetentionDays     *int   `yaml:"retention_days"`
 	SharedSecretsPath string `yaml:"shared_secrets_path"`
+	SecretsProvider   string `yaml:"secrets_provider"` // infisical (default) or aws
 	StagingDir        string `yaml:"staging_dir"`
 }
 
@@ -363,6 +364,9 @@ func (host *Host) validate(path string) []error {
 	}
 	if host.SharedSecretsPath != "" && !strings.HasPrefix(host.SharedSecretsPath, "/") {
 		probs.addf("shared_secrets_path must start with '/' (got %q)", host.SharedSecretsPath)
+	}
+	if p := host.SecretsProvider; p != "" && p != "infisical" && p != "aws" {
+		probs.addf("secrets_provider must be infisical or aws (got %q)", p)
 	}
 	return probs.errs
 }

@@ -2,32 +2,7 @@
 
 ## Install on a host
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/daksh-01/backstash/main/install.sh | sh
-```
-
-The script picks the right Linux binary (amd64 or arm64), downloads it with `checksums.txt`, refuses to
-install if the checksum does not match, and puts `backstash` in `/usr/local/bin` if it is writable,
-otherwise `~/.local/bin`. If `gh` is installed and logged in it also verifies the build provenance.
-To read it before running it, download it first: `curl -fsSLO <url> && less install.sh && sh install.sh`.
-
-| Variable | Meaning |
-|---|---|
-| `BACKSTASH_VERSION` | Release tag to install, such as `v0.1.0` (default: latest) |
-| `BACKSTASH_INSTALL_DIR` | Where to put the binary |
-| `BACKSTASH_REPO` | `owner/name` to download from, for a fork |
-
-Pin a version for servers: `curl -fsSL <url> | BACKSTASH_VERSION=v0.1.0 sh`. Run it again to upgrade.
-There is no macOS or Windows binary: build from source with `make build`.
-
-Then create the config (see [Configuration](configuration.md)) and run `backstash validate`.
-By hand instead of the script: download the binary and `checksums.txt` from the release page, run
-`sha256sum -c --ignore-missing checksums.txt`, and `install -m 0755` the binary.
-
-Docker-mode targets need nothing else on the host except Docker access for the running user.
-tcp-mode Postgres needs `pg_dump`/`pg_restore` of the **same major version as the server** (a newer
-client writes dumps an older server cannot restore); tcp-mode Redis
-needs `redis-cli`.
+See [Install](install.md): the installer, the config files, secrets, and scheduling.
 
 ## Schedule
 

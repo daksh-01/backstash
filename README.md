@@ -20,6 +20,7 @@ backstash backup myapp      # back up everything configured for the app
 
 | Page                                   | Read it for                                                   |
 | -------------------------------------- | ------------------------------------------------------------- |
+| [Install](docs/install.md) | Put it on a server, configure an app, schedule it |
 | [Usage](docs/usage.md)                 | Commands, flags and exit codes                                |
 | [Configuration](docs/configuration.md) | Every config key, secret name, and the bucket layout          |
 | [How it works](docs/how-it-works.md)   | Flow diagrams: backup, restore, retention, alerts             |

@@ -140,3 +140,35 @@ func TestFromEnvListsMissing(testState *testing.T) {
 		testState.Fatalf("got %v", err)
 	}
 }
+
+func TestAWSReadsJSONSecret(testState *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+		_, _ = w.Write([]byte(`{"Name":"/backstash/shared","SecretString":"{\"S3_ACCESS_KEY_ID\":\"abc\"}"}`))
+	}))
+	defer srv.Close()
+	testState.Setenv("AWS_ACCESS_KEY_ID", "k")
+	testState.Setenv("AWS_SECRET_ACCESS_KEY", "s")
+	testState.Setenv("AWS_REGION", "us-east-1")
+	testState.Setenv("AWS_ENDPOINT_URL", srv.URL)
+	src, err := AWSFromEnv("")
+	if err != nil {
+		testState.Fatal(err)
+	}
+	set, err := Resolve(context.Background(), src, "/backstash/shared")
+	if err != nil {
+		testState.Fatal(err)
+	}
+	if val, ok := set.Get("S3_ACCESS_KEY_ID"); !ok || val != "abc" {
+		testState.Fatalf("got %v", set)
+	}
+}
+
+func TestAWSFromEnvReportsMissing(testState *testing.T) {
+	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"} {
+		testState.Setenv(name, "")
+	}
+	if _, err := AWSFromEnv(""); err == nil || !strings.Contains(err.Error(), "AWS_REGION") {
+		testState.Fatalf("got %v", err)
+	}
+}

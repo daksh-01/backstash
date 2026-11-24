@@ -39,11 +39,17 @@ func Open(ctx context.Context, cfg *config.Config, app *config.App, configDir st
 	if runner == nil {
 		runner = execx.Exec{}
 	}
-	inf, err := secrets.FromEnv(filepath.Join(configDir, "identity.env"))
+	var src secrets.Source
+	var err error
+	if cfg.Host.SecretsProvider == "aws" {
+		src, err = secrets.AWSFromEnv(filepath.Join(configDir, "identity.env"))
+	} else {
+		src, err = secrets.FromEnv(filepath.Join(configDir, "identity.env"))
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	sec, err := secrets.Resolve(ctx, inf, SecretPaths(cfg, app)...)
+	sec, err := secrets.Resolve(ctx, src, SecretPaths(cfg, app)...)
 	if err != nil {
 		return nil, nil, err
 	}

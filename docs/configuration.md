@@ -93,6 +93,14 @@ and `INFISICAL_PROJECT_ID` (optionally `INFISICAL_URL`, `INFISICAL_ENV`, default
 not in the environment they are read from `<config-dir>/identity.env`. Give this identity **read-only
 access to `/backstash/**` and nothing else**.
 
+### AWS Secrets Manager instead of Infisical
+
+Set `secrets_provider: aws` in `config.yml`. `shared_secrets_path` and each app's `secrets_path` are then
+Secrets Manager secret names (e.g. `/backstash/shared`), each a key/value secret whose JSON holds the
+names in the table above. The identity is `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
+(optionally `AWS_SESSION_TOKEN`, `AWS_ENDPOINT_URL`), from the environment or `identity.env`. Instance roles
+and SSO are not supported. Grant it `secretsmanager:GetSecretValue` on `/backstash/*` only.
+
 ## Bucket layout
 
 ```
